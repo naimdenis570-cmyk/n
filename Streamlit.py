@@ -2,14 +2,14 @@
 App Streamlit: Medidor y analizador de ondas de sonido.
 
 Características:
-- Subir archivo de audio (WAV/MP3).
+- Subir archivo de audio (WAV/MP3/FLAC).
 - Reproducir audio dentro de la app.
 - Mostrar forma de onda (time domain).
 - Calcular FFT y mostrar espectro (frequency domain).
 - Calcular frecuencia dominante, RMS y nivel en dB.
 - Exportar informe (CSV/JSON) y descargar datos de la forma de onda.
 - Integración ligera con Streamlit.py: guarda el último análisis en st.session_state['last_sound']
-  para que otra app (por ejemplo Streamlit.py) la use si se ejecutan en la misma sesión.
+  para que otra app (por ejemplo Streamlit.py) la use si se ejecuten en la misma sesión.
 
 Dependencias:
 pip install streamlit numpy scipy soundfile matplotlib pandas
@@ -20,12 +20,59 @@ Aquí se usa carga de archivo (upload) para mantener la app simple y confiable.
 
 import io
 import json
+import tempfile
 import numpy as np
 import pandas as pd
-import soundfile as sf
 import matplotlib.pyplot as plt
 from scipy import signal
+from scipy.io import wavfile as scipy_wavfile
 import streamlit as st
+
+# Intentar importar soundfile (pysoundfile). Si no está disponible, usaremos un fallback con scipy (solo WAV).
+HAS_SOUNDFILE = True
+try:
+    import soundfile as sf
+except Exception:
+    sf = None
+    HAS_SOUNDFILE = False
+
+
+def read_audio(data_bytes, filename_hint=None):
+    """Leer audio desde bytes. Retorna (signal_data, sample_rate).
+
+    - Si pysoundfile está disponible lo usará (soporta WAV/MP3/FLAC si libs del sistema están instaladas).
+    - Si no, intentará usar scipy.io.wavfile leyendo a un archivo temporal (solo WAV).
+    """
+    if HAS_SOUNDFILE and sf is not None:
+        data_buffer = io.BytesIO(data_bytes)
+        # soundfile devuelve (samples, samplerate)
+        signal_data, sr = sf.read(data_buffer, dtype='float32')
+        return signal_data, sr
+
+    # Fallback: escribir a archivo temporal y usar scipy.io.wavfile (solo WAV soportado)
+    try:
+        suffix = '.wav'
+        if filename_hint and isinstance(filename_hint, str) and filename_hint.lower().endswith('.mp3'):
+            # No podemos leer MP3 con scipy fallback
+            raise RuntimeError("pysoundfile no disponible: no se puede leer MP3 sin librerías adicionales. Instala 'soundfile' y libsndfile.")
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data_bytes)
+            tmp.flush()
+            tmp_name = tmp.name
+
+        sr, data = scipy_wavfile.read(tmp_name)
+        # Convertir a float32 en rango [-1, 1] si es entero
+        if data.dtype.kind in ('i', 'u'):
+            # determinar máximo para normalizar según tipo
+            max_val = float(np.iinfo(data.dtype).max)
+            signal_data = data.astype(np.float32) / max_val
+        else:
+            signal_data = data.astype(np.float32)
+        return signal_data, int(sr)
+    except Exception:
+        raise
+
 
 st.set_page_config(page_title="Medidor de ondas de sonido", layout="wide")
 
@@ -58,12 +105,12 @@ with col_left:
         st.caption("Si necesitas captura desde el micrófono en vivo, puedo añadir soporte con streamlit-webrtc.")
     else:
         try:
-            # Leer bytes y usar soundfile para obtener señal y sample rate
+            # Leer bytes y usar soundfile para obtener señal y sample rate (o fallback)
             data_bytes = upload.read()
-            data_buffer = io.BytesIO(data_bytes)
-            signal_data, sr = sf.read(data_buffer, dtype='float32')
+            signal_data, sr = read_audio(data_bytes, getattr(upload, 'name', None))
+
             # soundfile devuelve (samples, channels) o (samples,)
-            if signal_data.ndim > 1:
+            if hasattr(signal_data, 'ndim') and signal_data.ndim > 1:
                 # convertir a mono promedio de canales
                 signal_mono = np.mean(signal_data, axis=1)
             else:
@@ -192,7 +239,6 @@ with col_left:
 
         except Exception as e:
             st.error(f"Error procesando el archivo: {e}")
-            st.error(f"Error al resolver: {e}")
 
 st.markdown("---")
 st.write("Sugerencias: puedes ampliar esta app para generar listas de ejercicios, exportar a CSV/PDF, o añadir tipos adicionales (sistemas, factorización, inecuaciones).")
