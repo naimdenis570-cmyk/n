@@ -39,10 +39,17 @@ except Exception:
     signal = None
     _HAS_SCIPY_SIGNAL = False
 
-from scipy.io import wavfile as scipy_wavfile
+# Intentamos importar scipy.io.wavfile solo si está disponible; si no, lo marcamos
+_HAS_SCIPY_IO = True
+try:
+    from scipy.io import wavfile as scipy_wavfile
+except Exception:
+    scipy_wavfile = None
+    _HAS_SCIPY_IO = False
+
 import streamlit as st
 
-# Intentar importar soundfile (pysoundfile). Si no está disponible, usaremos un fallback con scipy (solo WAV).
+# Intentar importar soundfile (pysoundfile). Si no está disponible, usaremos un fallback con scipy (solo WAV si scipy está presente).
 HAS_SOUNDFILE = True
 try:
     import soundfile as sf
@@ -78,37 +85,43 @@ def read_audio(data_bytes, filename_hint=None):
     """Leer audio desde bytes. Retorna (signal_data, sample_rate).
 
     - Si pysoundfile está disponible lo usará (soporta WAV/MP3/FLAC si libs del sistema están instaladas).
-    - Si no, intentará usar scipy.io.wavfile leyendo a un archivo temporal (solo WAV).
+    - Si no, intentará usar scipy.io.wavfile leyendo a un archivo temporal (solo WAV) si scipy está instalado.
+    - Si ninguno está disponible lanzará un RuntimeError explicando qué instalar.
     """
+    # Preferir soundfile si está disponible (mejor soporte de formatos)
     if HAS_SOUNDFILE and sf is not None:
         data_buffer = io.BytesIO(data_bytes)
-        # soundfile devuelve (samples, samplerate)
         signal_data, sr = sf.read(data_buffer, dtype='float32')
         return signal_data, sr
 
-    # Fallback: escribir a archivo temporal y usar scipy.io.wavfile (solo WAV soportado)
-    try:
-        suffix = '.wav'
-        if filename_hint and isinstance(filename_hint, str) and filename_hint.lower().endswith('.mp3'):
-            # No podemos leer MP3 con scipy fallback
-            raise RuntimeError("pysoundfile no disponible: no se puede leer MP3 sin librerías adicionales. Instala 'soundfile' y libsndfile.")
+    # Fallback: usar scipy.io.wavfile si está instalado
+    if _HAS_SCIPY_IO and scipy_wavfile is not None:
+        try:
+            suffix = '.wav'
+            # Si el nombre sugiere MP3 y no tenemos soundfile, no podremos leerlo
+            if filename_hint and isinstance(filename_hint, str) and filename_hint.lower().endswith('.mp3'):
+                raise RuntimeError("No hay backend para leer MP3. Instala 'soundfile' y libsndfile o usa WAV.")
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data_bytes)
-            tmp.flush()
-            tmp_name = tmp.name
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(data_bytes)
+                tmp.flush()
+                tmp_name = tmp.name
 
-        sr, data = scipy_wavfile.read(tmp_name)
-        # Convertir a float32 en rango [-1, 1] si es entero
-        if data.dtype.kind in ('i', 'u'):
-            # determinar máximo para normalizar según tipo
-            max_val = float(np.iinfo(data.dtype).max)
-            signal_data = data.astype(np.float32) / max_val
-        else:
-            signal_data = data.astype(np.float32)
-        return signal_data, int(sr)
-    except Exception:
-        raise
+            sr, data = scipy_wavfile.read(tmp_name)
+            # Convertir a float32 en rango [-1, 1] si es entero
+            if data.dtype.kind in ('i', 'u'):
+                max_val = float(np.iinfo(data.dtype).max)
+                signal_data = data.astype(np.float32) / max_val
+            else:
+                signal_data = data.astype(np.float32)
+            return signal_data, int(sr)
+        except Exception as e:
+            raise
+
+    # Si llegamos aquí no hay backend para leer audio
+    raise RuntimeError(
+        "No hay un backend disponible para leer archivos de audio. Instala 'soundfile' (pip install soundfile) y libsndfile, or 'scipy' (pip install scipy) para permitir lectura WAV."
+    )
 
 
 def plot_waveform(time, normalized):
