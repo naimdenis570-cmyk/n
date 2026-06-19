@@ -31,7 +31,14 @@ except Exception:
     plt = None
     HAS_MPL = False
 
-from scipy import signal
+# Intentamos cargar scipy.signal, pero si no está disponible añadimos un fallback para medfilt
+_HAS_SCIPY_SIGNAL = True
+try:
+    from scipy import signal
+except Exception:
+    signal = None
+    _HAS_SCIPY_SIGNAL = False
+
 from scipy.io import wavfile as scipy_wavfile
 import streamlit as st
 
@@ -42,6 +49,29 @@ try:
 except Exception:
     sf = None
     HAS_SOUNDFILE = False
+
+
+def _medfilt_fallback(x, kernel_size=3):
+    """Fallback sencillo para medfilt (solo 1D).
+    No es tan eficiente como scipy.signal.medfilt pero evita errores si scipy no está presente."""
+    x = np.asarray(x)
+    if kernel_size <= 1 or x.size == 0:
+        return x
+    k = int(kernel_size)
+    pad = k // 2
+    x_padded = np.pad(x, pad, mode='edge')
+    out = np.empty_like(x, dtype=x.dtype)
+    for i in range(len(x)):
+        window = x_padded[i : i + k]
+        out[i] = np.median(window)
+    return out
+
+
+def safe_medfilt(x, kernel_size=3):
+    if _HAS_SCIPY_SIGNAL and hasattr(signal, 'medfilt'):
+        return signal.medfilt(x, kernel_size=kernel_size)
+    else:
+        return _medfilt_fallback(x, kernel_size=kernel_size)
 
 
 def read_audio(data_bytes, filename_hint=None):
@@ -190,7 +220,7 @@ with col_left:
 
             if apply_filter:
                 # suavizado simple del espectro (filtro mediana)
-                mag_smoothed = signal.medfilt(mag, kernel_size=5)
+                mag_smoothed = safe_medfilt(mag, kernel_size=5)
                 mag_display = mag_smoothed
             else:
                 mag_display = mag
