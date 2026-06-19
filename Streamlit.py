@@ -1,147 +1,197 @@
-import random
+"""
+App Streamlit: Medidor y analizador de ondas de sonido.
+
+Características:
+- Subir archivo de audio (WAV/MP3).
+- Reproducir audio dentro de la app.
+- Mostrar forma de onda (time domain).
+- Calcular FFT y mostrar espectro (frequency domain).
+- Calcular frecuencia dominante, RMS y nivel en dB.
+- Exportar informe (CSV/JSON) y descargar datos de la forma de onda.
+- Integración ligera con Streamlit.py: guarda el último análisis en st.session_state['last_sound']
+  para que otra app (por ejemplo Streamlit.py) la use si se ejecutan en la misma sesión.
+
+Dependencias:
+pip install streamlit numpy scipy soundfile matplotlib pandas
+
+Nota: Para captura en vivo desde el micrófono hay componentes adicionales (streamlit-webrtc o componentes JS).
+Aquí se usa carga de archivo (upload) para mantener la app simple y confiable.
+"""
+
+import io
+import json
+import numpy as np
+import pandas as pd
+import soundfile as sf
+import matplotlib.pyplot as plt
+from scipy import signal
 import streamlit as st
-import sympy as sp
 
-st.set_page_config(page_title="Generador y solucionador de álgebra", layout="centered")
+st.set_page_config(page_title="Medidor de ondas de sonido", layout="wide")
 
-x = sp.symbols('x')
+st.title("Medidor y analizador de ondas de sonido")
+st.write(
+    "Sube un archivo de audio (WAV/MP3/FLAC) para visualizar la forma de onda, el espectro "
+    "y obtener métricas (frecuencia dominante, RMS, dB)."
+)
 
-def generate_linear():
-    a = random.randint(-10, 10)
-    while a == 0:
-        a = random.randint(-10, 10)
-    b = random.randint(-20, 20)
-    return {"type": "linear", "a": a, "b": b}
+col_left, col_right = st.columns([2, 1])
 
-def generate_quadratic():
-    a = random.randint(-5, 5)
-    while a == 0:
-        a = random.randint(-5, 5)
-    b = random.randint(-10, 10)
-    c = random.randint(-10, 10)
-    return {"type": "quadratic", "a": a, "b": b, "c": c}
-
-def solve_linear(a, b):
-    sol = sp.solve(sp.Eq(a*x + b, 0), x)
-    return sol
-
-def linear_steps_latex(a, b, sol):
-    eq_latex = sp.latex(sp.Eq(a*x + b, 0))
-    sol_latex = sp.latex(sp.Eq(x, sp.simplify(sol[0])))
-    steps = r"%s \quad \Rightarrow \quad %s" % (eq_latex, sol_latex)
-    return steps
-
-def solve_quadratic(a, b, c):
-    sols = sp.solve(sp.Eq(a*x**2 + b*x + c, 0), x)
-    return sols
-
-def quadratic_steps_latex(a, b, c, sols):
-    eq_latex = sp.latex(sp.Eq(a*x**2 + b*x + c, 0))
-    D = b**2 - 4*a*c
-    disc_latex = sp.latex(sp.Eq(sp.Symbol("D"), sp.simplify(D)))
-    formula_latex = r"x = \frac{-%s \pm \sqrt{%s}}{2 \cdot %s}" % (sp.latex(b), sp.latex(D), sp.latex(a))
-    sols_latex = ",\\; ".join(sp.latex(s) for s in sols)
-    steps = (
-        eq_latex
-        + r"\\[6pt]"
-        + r"\text{Discriminante: }" + disc_latex
-        + r"\\[6pt]"
-        + r"\text{Fórmula: }" + formula_latex
-        + r"\\[6pt]"
-        + r"\text{Soluciones: }" + sols_latex
-    )
-    return steps
-
-st.title("Generador y solucionador de álgebra")
-st.write("Genera y resuelve ecuaciones lineales y cuadráticas. Usa la casilla 'Mostrar pasos' para ver razonamiento simbólico.")
-
-with st.sidebar:
+with col_right:
     st.header("Opciones")
-    problem_type = st.selectbox("Tipo de problema", ["aleatorio", "lineal", "cuadrática"])
-    show_steps = st.checkbox("Mostrar pasos", value=True)
-    st.markdown("---")
-    st.markdown("Puedes introducir tus propios coeficientes abajo y pulsar 'Resolver manual'.")
-
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.subheader("Generar problema")
-    if st.button("Generar"):
-        if problem_type == "lineal":
-            prob = generate_linear()
-        elif problem_type == "cuadrática":
-            prob = generate_quadratic()
-        else:
-            prob = random.choice([generate_linear(), generate_quadratic()])
-        st.session_state["last_problem"] = prob
-
+    # Mostrar integración con la app de álgebra si existe
     if "last_problem" in st.session_state:
-        prob = st.session_state["last_problem"]
-        if prob["type"] == "linear":
-            a, b = prob["a"], prob["b"]
-            st.markdown("Problema (ecuación lineal):")
-            st.latex(sp.Eq(a*x + b, 0))
-            sols = solve_linear(a, b)
-            if show_steps:
-                st.markdown("Pasos:")
-                st.latex(linear_steps_latex(a, b, sols))
-            st.markdown("Solución:")
-            for s in sols:
-                st.latex(sp.Eq(x, sp.simplify(s)))
-        else:
-            a, b, c = prob["a"], prob["b"], prob["c"]
-            st.markdown("Problema (ecuación cuadrática):")
-            st.latex(sp.Eq(a*x**2 + b*x + c, 0))
-            sols = solve_quadratic(a, b, c)
-            if show_steps:
-                st.markdown("Pasos:")
-                st.latex(quadratic_steps_latex(a, b, c, sols))
-            st.markdown("Soluciones:")
-            for s in sols:
-                st.latex(sp.Eq(x, sp.simplify(s)))
+        st.subheader("Integración con Generador de Álgebra")
+        st.write("Último problema (desde Streamlit.py):")
+        st.json(st.session_state["last_problem"])
+        st.markdown("---")
+    upload = st.file_uploader(
+        "Subir archivo de audio", type=["wav", "mp3", "flac", "ogg", "aiff"], accept_multiple_files=False
+    )
+    apply_filter = st.checkbox("Aplicar ventana y filtro de suavizado al espectro", value=True)
+    export_csv = st.checkbox("Permitir exportar datos de forma de onda (CSV)", value=True)
+    export_json = st.checkbox("Generar informe JSON con métricas", value=True)
 
-with col2:
-    st.subheader("Resolver manual")
-    st.write("Introduce coeficientes y pulsa el botón.")
-    form = st.form(key="manual_form")
-    choice = form.selectbox("Tipo", ["lineal", "cuadrática"])
-    if choice == "lineal":
-        a_in = form.number_input("a (no puede ser 0)", value=1, step=1)
-        b_in = form.number_input("b", value=0, step=1)
+with col_left:
+    if not upload:
+        st.info("Sube un archivo de audio para empezar (por ejemplo, una grabación desde tu teléfono).")
+        st.caption("Si necesitas captura desde el micrófono en vivo, puedo añadir soporte con streamlit-webrtc.")
     else:
-        a_in = form.number_input("a (no puede ser 0)", value=1, step=1)
-        b_in = form.number_input("b", value=0, step=1)
-        c_in = form.number_input("c", value=0, step=1)
-    submitted = form.form_submit_button("Resolver manual")
-    if submitted:
         try:
-            a_val = int(a_in)
-            if a_val == 0:
-                st.error("El coeficiente 'a' no puede ser 0.")
+            # Leer bytes y usar soundfile para obtener señal y sample rate
+            data_bytes = upload.read()
+            data_buffer = io.BytesIO(data_bytes)
+            signal_data, sr = sf.read(data_buffer, dtype='float32')
+            # soundfile devuelve (samples, channels) o (samples,)
+            if signal_data.ndim > 1:
+                # convertir a mono promedio de canales
+                signal_mono = np.mean(signal_data, axis=1)
             else:
-                if choice == "lineal":
-                    sols = solve_linear(a_val, int(b_in))
-                    st.markdown("Ecuación:")
-                    st.latex(sp.Eq(a_val*x + int(b_in), 0))
-                    if show_steps:
-                        st.markdown("Pasos:")
-                        st.latex(linear_steps_latex(a_val, int(b_in), sols))
-                    st.markdown("Solución:")
-                    for s in sols:
-                        st.latex(sp.Eq(x, sp.simplify(s)))
-                    st.session_state["last_problem"] = {"type": "linear", "a": a_val, "b": int(b_in)}
-                else:
-                    sols = solve_quadratic(a_val, int(b_in), int(c_in))
-                    st.markdown("Ecuación:")
-                    st.latex(sp.Eq(a_val*x**2 + int(b_in)*x + int(c_in), 0))
-                    if show_steps:
-                        st.markdown("Pasos:")
-                        st.latex(quadratic_steps_latex(a_val, int(b_in), int(c_in), sols))
-                    st.markdown("Soluciones:")
-                    for s in sols:
-                        st.latex(sp.Eq(x, sp.simplify(s)))
-                    st.session_state["last_problem"] = {"type": "quadratic", "a": a_val, "b": int(b_in), "c": int(c_in)}
+                signal_mono = signal_data
+
+            N = len(signal_mono)
+            duration = N / float(sr)
+            time = np.linspace(0, duration, N, endpoint=False)
+
+            # Normalizar (ya está en float32 típicamente)
+            max_abs = np.max(np.abs(signal_mono)) if N > 0 else 1.0
+            if max_abs == 0:
+                normalized = signal_mono
+            else:
+                normalized = signal_mono / max_abs
+
+            # Métricas
+            rms = np.sqrt(np.mean(signal_mono.astype(np.float64) ** 2))
+            # evitar log(0)
+            eps = 1e-12
+            db = 20 * np.log10(rms + eps)
+
+            # FFT
+            # aplicamos ventana Hann para reducir leakage
+            window = np.hanning(N)
+            windowed = signal_mono * window
+            # usar rfft
+            freqs = np.fft.rfftfreq(N, d=1.0 / sr)
+            fft_vals = np.fft.rfft(windowed)
+            mag = np.abs(fft_vals)
+
+            if apply_filter:
+                # suavizado simple del espectro (filtro mediana)
+                mag_smoothed = signal.medfilt(mag, kernel_size=5)
+                mag_display = mag_smoothed
+            else:
+                mag_display = mag
+
+            # encontrar frecuencia dominante (ignorando DC)
+            if len(freqs) > 1:
+                idx_peak = np.argmax(mag_display[1:]) + 1
+                dominant_freq = freqs[idx_peak]
+            else:
+                dominant_freq = 0.0
+
+            # Mostrar reproductor
+            st.subheader("Reproducir audio")
+            st.audio(data_bytes, format=upload.type)
+
+            st.subheader("Información del archivo")
+            st.write(f"Nombre: {upload.name}")
+            st.write(f"Duración: {duration:.3f} s")
+            st.write(f"Tasa de muestreo: {sr} Hz")
+            st.write(f"Muestras: {N}")
+            st.write(f"RMS: {rms:.6f}")
+            st.write(f"Nivel aproximado (dBFS): {db:.2f} dB")
+            st.write(f"Frecuencia dominante (estimada): {dominant_freq:.2f} Hz")
+
+            st.markdown("---")
+            # Plot forma de onda
+            st.subheader("Forma de onda (time domain)")
+            fig_wf, ax_wf = plt.subplots(figsize=(10, 3))
+            ax_wf.plot(time, normalized, color="#2b8cbe", linewidth=0.6)
+            ax_wf.set_xlabel("Tiempo (s)")
+            ax_wf.set_ylabel("Amplitud (normalizada)")
+            ax_wf.set_xlim(0, min(duration, 10.0))  # mostrar hasta 10s por defecto
+            ax_wf.grid(alpha=0.3)
+            st.pyplot(fig_wf)
+            plt.close(fig_wf)
+
+            st.subheader("Espectro (frequency domain)")
+            fig_sp, ax_sp = plt.subplots(figsize=(10, 3))
+            # limitar eje x a Nyquist
+            nyq = sr / 2.0
+            # mostrar hasta 5 kHz por defecto o Nyquist si menor
+            max_plot_freq = min(5000, nyq)
+            mask = freqs <= max_plot_freq
+            ax_sp.semilogy(freqs[mask], mag_display[mask] + eps, color="#e34a33")
+            ax_sp.set_xlabel("Frecuencia (Hz)")
+            ax_sp.set_ylabel("Magnitud (log)")
+            ax_sp.grid(alpha=0.3)
+            st.pyplot(fig_sp)
+            plt.close(fig_sp)
+
+            # Preparar datos exportables
+            if export_csv:
+                csv_df = pd.DataFrame({"time_s": time, "amplitude": signal_mono})
+                csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="Descargar forma de onda (CSV)",
+                    data=csv_bytes,
+                    file_name=f"{upload.name}_waveform.csv",
+                    mime="text/csv",
+                )
+
+            if export_json:
+                report = {
+                    "file_name": upload.name,
+                    "duration_s": float(duration),
+                    "sample_rate": int(sr),
+                    "samples": int(N),
+                    "rms": float(rms),
+                    "db": float(db),
+                    "dominant_freq_hz": float(dominant_freq),
+                }
+                report_bytes = json.dumps(report, indent=2).encode("utf-8")
+                st.download_button(
+                    label="Descargar informe (JSON)",
+                    data=report_bytes,
+                    file_name=f"{upload.name}_report.json",
+                    mime="application/json",
+                )
+
+            # Guardar en session_state para integración con otras apps
+            st.session_state["last_sound"] = {
+                "file_name": upload.name,
+                "duration_s": float(duration),
+                "sample_rate": int(sr),
+                "samples": int(N),
+                "rms": float(rms),
+                "db": float(db),
+                "dominant_freq_hz": float(dominant_freq),
+            }
+
+            st.success("Análisis completado y guardado en session_state['last_sound'].")
+
         except Exception as e:
+            st.error(f"Error procesando el archivo: {e}")
             st.error(f"Error al resolver: {e}")
 
 st.markdown("---")
