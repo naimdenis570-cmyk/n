@@ -23,7 +23,14 @@ import json
 import tempfile
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+# Intentamos cargar matplotlib pero toleramos su ausencia
+HAS_MPL = True
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+    HAS_MPL = False
+
 from scipy import signal
 from scipy.io import wavfile as scipy_wavfile
 import streamlit as st
@@ -72,6 +79,45 @@ def read_audio(data_bytes, filename_hint=None):
         return signal_data, int(sr)
     except Exception:
         raise
+
+
+def plot_waveform(time, normalized):
+    if HAS_MPL:
+        fig_wf, ax_wf = plt.subplots(figsize=(10, 3))
+        ax_wf.plot(time, normalized, color="#2b8cbe", linewidth=0.6)
+        ax_wf.set_xlabel("Tiempo (s)")
+        ax_wf.set_ylabel("Amplitud (normalizada)")
+        ax_wf.set_xlim(0, min(time[-1] if len(time) else 0, 10.0))
+        ax_wf.grid(alpha=0.3)
+        st.pyplot(fig_wf)
+        plt.close(fig_wf)
+    else:
+        # Fallback simple con st.line_chart (no control de ejes)
+        try:
+            df_wf = pd.DataFrame({"time_s": time, "amplitude": normalized})
+            df_wf = df_wf.set_index('time_s')
+            st.line_chart(df_wf)
+        except Exception:
+            st.write("[Vista previa de la forma de onda no disponible — instala matplotlib para gráficos más ricos]")
+
+
+def plot_spectrum(freqs, mag_display, eps, max_plot_freq):
+    mask = freqs <= max_plot_freq
+    if HAS_MPL:
+        fig_sp, ax_sp = plt.subplots(figsize=(10, 3))
+        ax_sp.semilogy(freqs[mask], mag_display[mask] + eps, color="#e34a33")
+        ax_sp.set_xlabel("Frecuencia (Hz)")
+        ax_sp.set_ylabel("Magnitud (log)")
+        ax_sp.grid(alpha=0.3)
+        st.pyplot(fig_sp)
+        plt.close(fig_sp)
+    else:
+        try:
+            df_sp = pd.DataFrame({"freq": freqs[mask], "mag": mag_display[mask]})
+            df_sp = df_sp.set_index('freq')
+            st.line_chart(df_sp)
+        except Exception:
+            st.write("[Vista previa del espectro no disponible — instala matplotlib para gráficos más ricos]")
 
 
 st.set_page_config(page_title="Medidor de ondas de sonido", layout="wide")
@@ -172,28 +218,14 @@ with col_left:
             st.markdown("---")
             # Plot forma de onda
             st.subheader("Forma de onda (time domain)")
-            fig_wf, ax_wf = plt.subplots(figsize=(10, 3))
-            ax_wf.plot(time, normalized, color="#2b8cbe", linewidth=0.6)
-            ax_wf.set_xlabel("Tiempo (s)")
-            ax_wf.set_ylabel("Amplitud (normalizada)")
-            ax_wf.set_xlim(0, min(duration, 10.0))  # mostrar hasta 10s por defecto
-            ax_wf.grid(alpha=0.3)
-            st.pyplot(fig_wf)
-            plt.close(fig_wf)
+            plot_waveform(time, normalized)
 
             st.subheader("Espectro (frequency domain)")
-            fig_sp, ax_sp = plt.subplots(figsize=(10, 3))
             # limitar eje x a Nyquist
             nyq = sr / 2.0
             # mostrar hasta 5 kHz por defecto o Nyquist si menor
             max_plot_freq = min(5000, nyq)
-            mask = freqs <= max_plot_freq
-            ax_sp.semilogy(freqs[mask], mag_display[mask] + eps, color="#e34a33")
-            ax_sp.set_xlabel("Frecuencia (Hz)")
-            ax_sp.set_ylabel("Magnitud (log)")
-            ax_sp.grid(alpha=0.3)
-            st.pyplot(fig_sp)
-            plt.close(fig_sp)
+            plot_spectrum(freqs, mag_display, eps, max_plot_freq)
 
             # Preparar datos exportables
             if export_csv:
